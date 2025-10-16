@@ -26,9 +26,9 @@ class WriteTask:
     payload: dict
 
 
-class RedisMySQLGateway:
+class RedisMySQLService:
     """
-    Redis 优先、MySQL 降级的网关实现：
+    Redis 优先、MySQL 降级的服务实现：
     - 写：先写 Redis（若可用），再异步落 MySQL
     - 读：优先读 Redis，异常时清理过期后读 MySQL
     - 仅使用一个表 redis_gateway_info（含 meta 行）
@@ -36,7 +36,13 @@ class RedisMySQLGateway:
     - 通过 HealthMonitor 实现健康拨测、回灌、周期清理
     """
 
-    def __init__(self, get_redis_cache_service, get_db_session, instance_id: Optional[str] = None, ensure_db_init: bool = False):
+    def __init__(
+        self,
+        get_redis_cache_service,
+        get_db_session,
+        instance_id: Optional[str] = None,
+        ensure_db_init: bool = False,
+    ):
         """
         参数：
         - get_redis_cache_service: 可调用，返回已配置的 Redis 客户端（你的原有函数）
@@ -44,7 +50,6 @@ class RedisMySQLGateway:
         - ensure_db_init: 是否调用外部建表函数，默认 False（由你现有框架负责）
         """
         if ensure_db_init:
-            # 外部如果提供初始化函数，可在构造时调用；默认跳过
             try:
                 ensure_database_initialized()
             except Exception:
@@ -347,6 +352,7 @@ class RedisMySQLGateway:
             rows = session.execute(
                 select(RedisGatewayInfo).where(and_(RedisGatewayInfo.name == name, RedisGatewayInfo.key != "__meta__"))
             ).scalars().all()
+        
             now = utc_now()
             result = {}
             for r in rows:
@@ -468,7 +474,7 @@ class RedisMySQLGateway:
     # --------------- 回灌逻辑 ---------------
     def rehydrate_from_mysql(self):
         """读取 MySQL 中未过期的数据，写回 Redis。"""
-        with get_session() as session:
+        with self.get_db_session() as session:
             now = utc_now()
             # 遍历所有 meta 行
             metas = session.execute(

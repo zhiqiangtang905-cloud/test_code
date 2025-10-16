@@ -18,10 +18,11 @@ class HealthMonitor:
     - 所有定时任务在执行前，均用分布式锁保证只有一个实例在执行
     """
 
-    def __init__(self, gateway, lock: Optional[DistributedLock] = None):
-        self.gateway = gateway
-        self.redis = gateway.redis
-        self.lock = lock or DistributedLock(self.redis, gateway.get_db_session)
+    def __init__(self, service, lock: Optional[DistributedLock] = None):
+        # 兼容：HealthMonitor 现在绑定 Service
+        self.service = service
+        self.redis = service.redis
+        self.lock = lock or DistributedLock(self.redis, service.get_db_session)
         self._probing = False
         self._stop_event = threading.Event()
         self._schedule_thread = threading.Thread(target=self._schedule_loop, name="health-schedule", daemon=True)
@@ -61,7 +62,7 @@ class HealthMonitor:
         # 尝试获取分布式锁，避免多实例重复清理
         try:
             with self.lock.context("mysql_cleanup", ttl_seconds=55, blocking=False) as _lk:  # noqa: F841
-                with self.gateway.get_db_session() as session:
+                with self.service.get_db_session() as session:
                     cleanup_expired(session)
         except TimeoutError:
             # 未拿到锁，跳过本轮
@@ -91,7 +92,7 @@ class HealthMonitor:
     def _rehydrate(self):
         """从 MySQL 将未过期数据回灌到 Redis。"""
         try:
-            self.gateway.rehydrate_from_mysql()
+            self.service.rehydrate_from_mysql()
         except Exception:
             # 回灌失败不致命，等待下次
             pass
