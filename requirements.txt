@@ -1,0 +1,20 @@
+# Redis降级服务依赖包
+
+# SQLAlchemy - ORM框架
+sqlalchemy>=1.4.0
+
+# Redis客户端
+redis>=4.0.0
+
+# 任务调度器
+schedule>=1.1.0
+
+# MySQL驱动（根据需要选择一个）
+# PyMySQL - 纯Python实现
+pymysql>=1.0.0
+
+# 或者使用 mysqlclient - C扩展，性能更好
+# mysqlclient>=2.1.0
+
+# 日志（Python标准库，无需安装）
+# logging
