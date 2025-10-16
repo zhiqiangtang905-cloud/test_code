@@ -40,7 +40,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple, Dict
 
 from redis import Redis
 from redis.exceptions import RedisError
@@ -62,6 +62,20 @@ class RedisMySQLGateway:
         self.redis = redis_client
         self.state = redis_state or RedisState()
         self._bg = _BackgroundPersistence()
+        
+    # ------------- Internal helpers -------------
+    @staticmethod
+    def _to_str(data: Any) -> Any:
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode()
+        return data
+
+    @classmethod
+    def _json_loads(cls, data: Any) -> Any:
+        if data is None:
+            return None
+        s = cls._to_str(data)
+        return json.loads(s)
 
     # ------------- Health hooks -------------
     def mark_redis_unavailable(self) -> None:
@@ -111,7 +125,7 @@ class RedisMySQLGateway:
             if self.state.available:
                 data = self.redis.get(key)
                 if data is not None:
-                    return json.loads(data)
+                    return self._json_loads(data)
         except RedisError:
             self.mark_redis_unavailable()
         # Fallback to MySQL
@@ -192,7 +206,7 @@ class RedisMySQLGateway:
             if self.state.available:
                 data = self.redis.hget(name=name, key=key)
                 if data is not None:
-                    return json.loads(data)
+                    return self._json_loads(data)
         except RedisError:
             self.mark_redis_unavailable()
         # Fallback to MySQL with cleanup
@@ -220,6 +234,40 @@ class RedisMySQLGateway:
             self.mark_redis_unavailable()
         self._bg.persist_hash_delete(name, key)
         return deleted
+
+    def hgetall(self, name: str) -> Dict[str, Any]:
+        """Return a dict of field->value for a hash. Redis first, MySQL fallback.
+
+        Values are json-decoded; field names are returned as strings.
+        """
+        try:
+            if self.state.available:
+                data = self.redis.hgetall(name)
+                if not data:
+                    return {}
+                result: Dict[str, Any] = {}
+                for k, v in data.items():
+                    key_str = self._to_str(k)
+                    result[key_str] = self._json_loads(v)
+                return result
+        except RedisError:
+            self.mark_redis_unavailable()
+        # Fallback to MySQL
+        self._bg.cleanup_expired_sync()
+        with get_session() as session:
+            rows = (
+                session.query(RedisGatewayInfo)
+                .filter(RedisGatewayInfo.name == name, RedisGatewayInfo.key != "__list__")
+                .all()
+            )
+            out: Dict[str, Any] = {}
+            for r in rows:
+                if r.value is not None:
+                    try:
+                        out[r.key] = json.loads(r.value)
+                    except Exception:
+                        continue
+            return out
 
     # List
     def _get_list_mysql(self, name: str) -> List[Any]:
@@ -295,7 +343,7 @@ class RedisMySQLGateway:
         try:
             if self.state.available:
                 data = self.redis.lrange(name, start, end)
-                return [json.loads(x) for x in data]
+                return [self._json_loads(x) for x in data]
         except RedisError:
             self.mark_redis_unavailable()
         # Fallback
@@ -327,7 +375,7 @@ class RedisMySQLGateway:
                 data = self.redis.lpop(key, count)
                 if data is None:
                     return []
-                return [json.loads(x) for x in data] if isinstance(data, list) else [json.loads(data)]
+                return [self._json_loads(x) for x in data] if isinstance(data, list) else [self._json_loads(data)]
         except RedisError:
             self.mark_redis_unavailable()
         # Fallback
@@ -340,13 +388,25 @@ class RedisMySQLGateway:
         try:
             if self.state.available:
                 data = self.redis.lindex(key, index)
-                return json.loads(data) if data is not None else None
+                return self._json_loads(data) if data is not None else None
         except RedisError:
             self.mark_redis_unavailable()
         items = self._get_list_mysql(key)
         if -len(items) <= index < len(items):
             return items[index]
         return None
+
+    def llen(self, name: str) -> int:
+        """Return the length of a list. Redis first, MySQL fallback."""
+        try:
+            if self.state.available:
+                return int(self.redis.llen(name))
+        except RedisError:
+            self.mark_redis_unavailable()
+        # Fallback
+        self._bg.cleanup_expired_sync()
+        items = self._get_list_mysql(name)
+        return len(items)
 
     # Helpers for MySQL cleanup --------------------------------------------
     def cleanup_expired(self) -> int:
