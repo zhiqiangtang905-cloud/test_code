@@ -1,25 +1,21 @@
 # -*- coding: utf-8 -*-
 import json
-import os
 import threading
-from typing import Any, Iterable, Optional
-
-import redis
+from typing import Any, Optional
 
 
-class RedisJSONClient:
+class RedisJSONAdapter:
     """
-    Redis JSON 客户端包装：
-    - 所有写入自动 json.dumps
-    - 所有读取自动 json.loads
+    Redis JSON 客户端适配器：
+    - 使用外部提供的 Redis 连接（不重新连接）
+    - 所有写入自动 json.dumps，读取自动 json.loads
     - 提供必要的 KV/Hash/List API
     - 维护可用状态标记
     """
 
-    def __init__(self, url: Optional[str] = None, decode_responses: bool = True):
-        self._url = url or os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-        # decode_responses=True 让我们得到 str 而非 bytes
-        self._client = redis.Redis.from_url(self._url, decode_responses=decode_responses)
+    def __init__(self, client):
+        # 外部提供的 redis 客户端，例如 get_redis_cache_service()
+        self._client = client
         self._lock = threading.RLock()
         self.is_available = True
 
@@ -27,7 +23,7 @@ class RedisJSONClient:
     def ping(self) -> bool:
         try:
             return bool(self._client.ping())
-        except redis.RedisError:
+        except Exception:
             return False
 
     def mark_unavailable(self):

@@ -4,7 +4,37 @@
 
 from redis_mysql_gateway import RedisMySQLGateway, HealthMonitor
 
-gateway = RedisMySQLGateway()
+
+# 你的项目中已有：
+# from your_project import get_redis_cache_service, get_db_session
+
+def get_redis_cache_service():
+    import redis
+    return redis.Redis.from_url("redis://127.0.0.1:6379/0", decode_responses=True)
+
+
+from contextlib import contextmanager
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+engine = create_engine("mysql+pymysql://root:password@127.0.0.1:3306/redis_gateway_info", future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
+
+
+@contextmanager
+def get_db_session():
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+gateway = RedisMySQLGateway(get_redis_cache_service, get_db_session)
 health = HealthMonitor(gateway)
 gateway.attach_health_monitor(health)
 health.start()

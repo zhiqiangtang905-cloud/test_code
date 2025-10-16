@@ -6,7 +6,7 @@ from typing import Optional
 import schedule
 
 from .locks import DistributedLock
-from .db import get_session, cleanup_expired
+from .db import cleanup_expired
 
 
 class HealthMonitor:
@@ -21,7 +21,7 @@ class HealthMonitor:
     def __init__(self, gateway, lock: Optional[DistributedLock] = None):
         self.gateway = gateway
         self.redis = gateway.redis
-        self.lock = lock or DistributedLock(self.redis)
+        self.lock = lock or DistributedLock(self.redis, gateway.get_db_session)
         self._probing = False
         self._stop_event = threading.Event()
         self._schedule_thread = threading.Thread(target=self._schedule_loop, name="health-schedule", daemon=True)
@@ -61,7 +61,7 @@ class HealthMonitor:
         # 尝试获取分布式锁，避免多实例重复清理
         try:
             with self.lock.context("mysql_cleanup", ttl_seconds=55, blocking=False) as _lk:  # noqa: F841
-                with get_session() as session:
+                with self.gateway.get_db_session() as session:
                     cleanup_expired(session)
         except TimeoutError:
             # 未拿到锁，跳过本轮

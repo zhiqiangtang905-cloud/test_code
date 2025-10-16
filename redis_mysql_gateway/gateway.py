@@ -10,9 +10,9 @@ from typing import Any, Optional
 
 from sqlalchemy import select, delete, and_, or_, func
 
-from .db import get_session, utc_now, ensure_database_initialized
+from .db import utc_now, ensure_database_initialized
 from .models import RedisGatewayInfo
-from .redis_wrapper import RedisJSONClient
+from .redis_wrapper import RedisJSONAdapter
 from .locks import DistributedLock, DistributedSemaphore
 
 
@@ -36,12 +36,24 @@ class RedisMySQLGateway:
     - 通过 HealthMonitor 实现健康拨测、回灌、周期清理
     """
 
-    def __init__(self, redis_url: Optional[str] = None, instance_id: Optional[str] = None):
-        ensure_database_initialized()
+    def __init__(self, get_redis_cache_service, get_db_session, instance_id: Optional[str] = None, ensure_db_init: bool = False):
+        """
+        参数：
+        - get_redis_cache_service: 可调用，返回已配置的 Redis 客户端（你的原有函数）
+        - get_db_session: 可调用，返回可作为上下文管理器的 SQLAlchemy Session（你的原有函数）
+        - ensure_db_init: 是否调用外部建表函数，默认 False（由你现有框架负责）
+        """
+        if ensure_db_init:
+            # 外部如果提供初始化函数，可在构造时调用；默认跳过
+            try:
+                ensure_database_initialized()
+            except Exception:
+                pass
         self.instance_id = instance_id or os.getenv("INSTANCE_ID") or str(uuid.uuid4())
-        self.redis = RedisJSONClient(redis_url)
-        self.lock = DistributedLock(self.redis, instance_id=self.instance_id)
-        self.semaphore = DistributedSemaphore(self.redis, instance_id=self.instance_id)
+        self.redis = RedisJSONAdapter(get_redis_cache_service())
+        self.get_db_session = get_db_session
+        self.lock = DistributedLock(self.redis, get_db_session, instance_id=self.instance_id)
+        self.semaphore = DistributedSemaphore(self.redis, get_db_session, instance_id=self.instance_id)
         self._write_queue: "Queue[WriteTask]" = Queue(maxsize=10000)
         self._writer_thread = threading.Thread(target=self._writer_loop, name="mysql-writer", daemon=True)
         self._writer_thread.start()
@@ -83,7 +95,7 @@ class RedisMySQLGateway:
     def _apply_task_sync(self, task: WriteTask):
         op = task.op
         p = task.payload
-        with get_session() as session:
+        with self.get_db_session() as session:
             if op == "set_kv":
                 self._mysql_upsert_kv(session, p["key"], p["value"], p.get("ttl"))
             elif op == "expire":
@@ -297,7 +309,7 @@ class RedisMySQLGateway:
         except Exception:
             self._on_redis_error()
         # MySQL 读取前先清理过期
-        with get_session() as session:
+        with self.get_db_session() as session:
             from .db import cleanup_expired
             cleanup_expired(session)
             row = session.get(RedisGatewayInfo, {"key": key, "name": ""})
@@ -313,7 +325,7 @@ class RedisMySQLGateway:
                 return self.redis.hget(name, key)
         except Exception:
             self._on_redis_error()
-        with get_session() as session:
+        with self.get_db_session() as session:
             from .db import cleanup_expired
             cleanup_expired(session)
             row = session.get(RedisGatewayInfo, {"key": key, "name": name})
@@ -329,7 +341,7 @@ class RedisMySQLGateway:
                 return self.redis.hgetall(name)
         except Exception:
             self._on_redis_error()
-        with get_session() as session:
+        with self.get_db_session() as session:
             from .db import cleanup_expired
             cleanup_expired(session)
             rows = session.execute(
@@ -355,7 +367,7 @@ class RedisMySQLGateway:
                 return False
         except Exception:
             self._on_redis_error()
-        with get_session() as session:
+        with self.get_db_session() as session:
             from .db import cleanup_expired
             cleanup_expired(session)
             now = utc_now()
@@ -437,7 +449,7 @@ class RedisMySQLGateway:
 
     # --------------- 内部：MySQL List 读取 ---------------
     def _mysql_list_read(self, name: str) -> list[Any]:
-        with get_session() as session:
+        with self.get_db_session() as session:
             from .db import cleanup_expired
             cleanup_expired(session)
             row = session.get(RedisGatewayInfo, {"key": name, "name": ""})

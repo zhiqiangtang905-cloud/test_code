@@ -1,56 +1,21 @@
 # -*- coding: utf-8 -*-
-import os
-import contextlib
 from datetime import datetime, timezone
-from typing import Iterator, Optional
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker, scoped_session
-
-
-# 默认的数据库名为 redis_gateway_info
-# 可通过环境变量 DATABASE_URL 覆盖，例如：
-# mysql+pymysql://user:password@host:3306/redis_gateway_info
-DEFAULT_DB_URL = os.getenv(
-    "DATABASE_URL",
-    "mysql+pymysql://root:password@127.0.0.1:3306/redis_gateway_info",
-)
-
-# 为了在多线程异步写入时提升复用，使用连接池
-engine = create_engine(
-    DEFAULT_DB_URL,
-    pool_pre_ping=True,
-    pool_recycle=1800,
-    future=True,
-)
-
-SessionLocal = scoped_session(
-    sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
-)
-
-
-@contextlib.contextmanager
-def get_session() -> Iterator:
-    """获取一个 SQLAlchemy 会话，自动提交或回滚。"""
-    session = SessionLocal()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+# 本模块仅保留与时间、清理等通用逻辑；
+# 连接与会话由外部注入的 get_db_session() 提供。
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_database_initialized():
-    """确保表结构已创建。"""
-    from .models import Base  # 延迟导入，避免循环依赖
-    Base.metadata.create_all(bind=engine)
+def ensure_database_initialized(create_all_callable=None):
+    """确保表结构已创建。
+    由外部传入 create_all_callable(engine_or_bind) 来完成初始化；
+    如果未提供，则跳过（假设外部已初始化）。
+    """
+    if create_all_callable is not None:
+        create_all_callable()
 
 
 def cleanup_expired(session) -> int:

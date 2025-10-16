@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .db import get_session, utc_now
+from .db import utc_now
 from .models import RedisGatewayInfo
 
 
@@ -28,8 +28,9 @@ class DistributedLock:
     - MySQL 使用 redis_gateway_info 表，行：key='__lock__', name=lock_name, value={'token': token}
     """
 
-    def __init__(self, redis_client, instance_id: Optional[str] = None):
+    def __init__(self, redis_client, get_db_session, instance_id: Optional[str] = None):
         self.redis = redis_client
+        self._get_db_session = get_db_session
         self.instance_id = instance_id or str(uuid.uuid4())
 
     def acquire(self, name: str, ttl_seconds: int, blocking: bool = True, retry_interval: float = 0.2) -> Optional[LockToken]:
@@ -59,7 +60,7 @@ class DistributedLock:
     def _acquire_mysql(self, name: str, token: str, ttl_seconds: int) -> bool:
         now = utc_now()
         expire_time = now + timedelta(seconds=ttl_seconds)
-        with get_session() as session:
+        with self._get_db_session() as session:
             # 尝试插入（不存在则成功）
             try:
                 row = RedisGatewayInfo(
@@ -121,7 +122,7 @@ class DistributedLock:
             except Exception:
                 self.redis.mark_unavailable()
         # MySQL 降级
-        with get_session() as session:
+        with self._get_db_session() as session:
             row = session.execute(
                 select(RedisGatewayInfo).where(
                     (RedisGatewayInfo.key == "__lock__") & (RedisGatewayInfo.name == lock.name)
@@ -158,8 +159,9 @@ class DistributedSemaphore:
     - MySQL：使用单行 key='__semaphore__', name=sem_name，value= {max, holders:[{token, expire_ts}]}
     """
 
-    def __init__(self, redis_client, instance_id: Optional[str] = None):
+    def __init__(self, redis_client, get_db_session, instance_id: Optional[str] = None):
         self.redis = redis_client
+        self._get_db_session = get_db_session
         self.instance_id = instance_id or str(uuid.uuid4())
 
     def acquire(self, name: str, limit: int, ttl_seconds: int, token: Optional[str] = None) -> Optional[str]:
@@ -190,10 +192,9 @@ class DistributedSemaphore:
 
     def _acquire_mysql(self, name: str, limit: int, ttl_seconds: int, token: str) -> Optional[str]:
         from sqlalchemy import select
-        from .db import get_session
         now_ts = int(utc_now().timestamp())
         expire_ts = now_ts + ttl_seconds
-        with get_session() as session:
+        with self._get_db_session() as session:
             row = session.execute(
                 select(RedisGatewayInfo).where(
                     (RedisGatewayInfo.key == "__semaphore__") & (RedisGatewayInfo.name == name)
@@ -231,7 +232,7 @@ class DistributedSemaphore:
             except Exception:
                 self.redis.mark_unavailable()
         # MySQL 降级
-        with get_session() as session:
+        with self._get_db_session() as session:
             row = session.execute(
                 select(RedisGatewayInfo).where(
                     (RedisGatewayInfo.key == "__semaphore__") & (RedisGatewayInfo.name == name)

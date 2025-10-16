@@ -10,10 +10,12 @@ Redis-MySQL 降级网关
 from .gateway import RedisMySQLGateway
 from .health import HealthMonitor
 from .locks import DistributedLock, DistributedSemaphore
+from .redis_wrapper import RedisJSONAdapter
 
 __all__ = [
     "RedisMySQLGateway",
     "HealthMonitor",
     "DistributedLock",
     "DistributedSemaphore",
+    "RedisJSONAdapter",
 ]
